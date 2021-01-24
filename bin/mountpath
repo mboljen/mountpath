@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+#
+# Created:         Do 2020-06-11 12:13:23 CEST
+# Last Modified:   Sa 2020-07-04 22:32:35 CEST
+#
+# mountpath:
+#   This script will lookup the mountpoint for the given path
+#   in /etc/fstab and mount the corresponding device if
+#   currently unmounted.
+
+# Help text
+usage() {
+cat << EOF
+
+Usage: mountpath [options] <path>
+
+OPTIONS:
+   -l         Lookup mountpoint in /etc/fstab for the given path
+   -c         Check if corresponding device is mounted (skips mount)
+   -u         Unmount the corresponding device safely
+   -t <sec>   Set sleep time between unmount trials (default: 5)
+   -m <num>   Set the maximum number of unmount trials (default: 10)
+   -h         Show this help message
+EOF
+}
+
+# Exit codes
+#
+#   0 ... ok
+#   1 ... mountpath failed, device is already mounted
+#   2 ... mountpath failed, no mountpoint found in /etc/fstab
+#   3 ... mountpath failed, mount command failed
+#   4 ... mountpath failed, umount command failed
+#   5 ... mountpath failed, insufficient pre-requisites
+#   6 ... mountpath failed, invalid syntax
+
+# Initialization
+CHECKONLY=0
+LOOKUP=0
+UMOUNT=0
+SLEEPTIME=5
+MAX=10
+FINDMNT=$(command -v findmnt)
+
+# Process options
+while getopts "clut:m:h" OPTION
+do
+    case "${OPTION}"
+    in
+        c)
+            CHECKONLY=1
+            ;;
+        l)
+            LOOKUP=1
+            ;;
+        u)
+            UMOUNT=1
+            ;;
+        t)
+            SLEEPTIME="${OPTARG}"
+            ;;
+        m)
+            MAX="${OPTARG}"
+            ;;
+        h|\?)
+            usage
+            exit 0
+            ;;
+    esac
+done
+
+# Check availabilty of findmnt
+if ! [ -x "${FINDMNT}" ]
+then
+    echo "$0: findmnt not found, probably not installed"
+    exit 5
+fi
+
+# Skip options and shift index
+shift $((OPTIND-1))
+
+# Check number of arguments
+if (( $# != 1 ))
+then
+    echo "Invalid syntax: exactly one argument required"
+    exit 6
+fi
+
+# Initialize mountpoint
+curpath="$1"
+
+# Check until mountpoint found or search fails
+while :
+do
+    # Check if current path is contained in /etc/fstab
+    $FINDMNT --fstab "$curpath" >/dev/null
+    stat=$?
+    if [ "$stat" -eq 0 ]
+    then
+        # Mountpoint found
+        mountpoint=$curpath
+        break
+    fi
+
+    # Get parent
+    parent=$(dirname "$curpath")
+
+    # Check whether parent has changed, otherwise end loop
+    if [ "$parent" == "$curpath" ]
+    then
+        echo "Cannot detect mountpoint in /etc/fstab"
+        exit 2
+    fi
+
+    # Proceed to parent folder
+    curpath="$parent"
+
+done
+
+
+# Check if only mountpoint lookup required
+if [ "$LOOKUP" -eq 1 ]
+then
+
+    # Print mountpoint and exit
+    echo "$mountpoint"
+    exit 0
+
+fi
+
+
+# Check if explicit unmount required
+if [ "$UMOUNT" -eq 1 ]
+then
+
+    # Initialize counter
+    count=1
+
+    # Try to unmount
+    while :
+    do
+        # Check whether device is mounted
+        $FINDMNT --mountpoint "$mountpoint" > /dev/null
+        stat=$?
+        if [ "$stat" -eq 0 ]
+        then
+
+            # True, so invoke umount
+            umount "$mountpoint" 2> /dev/null
+            stat=$?
+            if [ "$stat" -eq 0 ]
+            then
+
+                # Umount successful
+                echo "Mountpoint $mountpoint successfully umounted"
+                exit 0
+
+            else
+
+                # Sleep some time and increment counter
+                sleep "$SLEEPTIME"
+                ((count++))
+
+                # Stop here if maximum number of trials reached
+                if [ "$count" -gt "$MAX" ]
+                then
+                    echo "Failed to unmount $mountpoint"
+                    exit 4
+                fi
+
+            fi
+
+        else
+
+            # Not mounted
+            echo "Mountpoint $mountpoint not mounted"
+            exit 1
+
+        fi
+    done
+fi
+
+# Check whether device is mounted
+$FINDMNT --mountpoint "$mountpoint" >/dev/null
+stat=$?
+if [ "$stat" -eq 0 ]
+thens
+
+    # True, device mounted
+    echo "Mountpoint $mountpoint already mounted"
+
+    # Checkonly flag
+    if [ $CHECKONLY -eq 1 ]
+    then
+        # Check only
+        exit 0
+    else
+        # Mount failed
+        exit 1
+    fi
+
+else
+
+    # Checkonly flag
+    if [ $CHECKONLY -eq 1 ]
+    then
+        # Device is not mounted
+        echo "Mountpoint $mountpoint not mounted"
+        exit 1
+    fi
+
+    # False, invoke mount operation
+    mount "$mountpoint"
+    stat=$?
+    if [ "$stat" -eq 0 ]
+    then
+
+        # Mount successful
+        echo "Mountpoint $mountpoint successfully mounted"
+        exit 0
+
+    else
+
+        # Mount failed
+        echo "Failed to mount $mountpoint"
+        exit 3
+
+    fi
+fi
